@@ -1369,6 +1369,7 @@ Hmmmmm.
    which is the default)
 4. Modify thorchain to allow for additional chain-specific config
 
+</br>
 
 1. Is time consuming and another codebase to maintain
 2. Isn't super clear, might confuse devs, probably breaks other devops flows which

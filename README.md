@@ -2610,7 +2610,7 @@ bitcoin-cli getreceivedbyaddress qphdm8naznqww8zykk4xd8zccg55j2ucsvdp8gz897
 
 DONE. Brilliant!
 
-![Thorchain Explorer with DCR Swaps](private-swaps-screenshot.png "Thorchain Explorer with DCR Swaps")
+![Thorchain Explorer with DCR Swaps](./private-swaps-screenshot.png)
 
 Time to work out what's next...  
 

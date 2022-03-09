@@ -17,6 +17,17 @@
 [22.12.2021 Wednesday 8hrs](#22122021-wednesday)  
 [23.12.2021 Thursday 8hrs](#23122021-thursday)  
 
+[24.01.2022 Monday 4hrs](#24012022-monday)  
+[25.01.2022 Tuesday 6hrs](#25012022-tuesday)  
+[14.02.2022 Monday 2.5hrs](#14022022-monday)  
+[16.02.2022 Wednesday 4hrs](#16022022-wednesday)  
+[23.02.2022 Wednesday 7hrs](#23022022-wednesday)  
+[01.03.2022 Tuesday 7hrs](#01032022-tuesday)  
+[02.03.2022 Wednesday 6hrs](#02032022-wednesday)  
+[03.03.2022 Thursday 0hrs](#03032022-thursday)  
+[07.03.2022 Monday 4hrs](#07032022-monday)  
+[08.03.2022 Tuesday 8hrs](#08032022-tuesday)  
+
 ## 23.11.2021 Tuesday
 
 Posted on the TC forum if anyone would be interested in me doing further development / looking into other chains.
@@ -2702,4 +2713,1491 @@ Perhaps I should look into helping out the official `dcrwallet` with a suitable
 PR.
 
 But first... xchain.
+
+### 24.01.2022 Monday
+
+Wow. Doesn't feel like a month since I last worked on Decred. Right the plan is
+to get to the same integration step as Dash...
+
+I'll start with merging latest changes from `develop` and run through my merge
+request update checklist. I can also compare decred with doge now that it has
+been merged in.
+
+`gco 991-add-decred-chain`
+
+- [x] Actually looks like `DOGE` hasn't been added to any `manager_network`.
+      I just left what I have in `manager_network_current` and removed from `manager_network_v63`
+- [x] stopchan
+- [x] lastSolvencyCheckHeight
+- [x] run tests
+- [ ] test swap (made a separate file for this for simplicity)
+
+
+Okay there's definitely something up. DCR is listed on the `inbound_addresses`
+but the address property hasn't been set.
+
+`git show dash:docker/docker-compose.yaml`
+
+It shouldn't even be able to generate the dash address, something fishy going on
+here. Not using the correct docker image?
+
+`docker image inspect registry.gitlab.com/alexdcox/thornode:mocknet | grep -i created`
+> 2022-01-25T06:47:26.1381644Z
+
+Current UTC is 6:51am
+
+Looks right. Hmmm.  
+Was using a tag other than `latest` (omitted) somewhere in the build chain.  
+Sorted.  
+Now we have a decred address and not a dash address in the inbound list.  
+Now can we create the pool?
+
+Yes, but getting this on a swap from BCH:
+
+```
+error code: -25
+error message:
+Missing inputs
+```
+
+### 25.01.2022 Tuesday
+
+Right straight back into testing swaps.
+
+- cluster up
+- network explorer up
+- create + fund thor wallet
+- create + fund dcr wallet
+- create dcr pool
+- create bch pool
+- swap bch -> dcr
+- swap dcr -> bch
+
+Looking good. Pushed changes, sent update to leena and devteam on discord.  
+Moving onto the `node-launcher` updates...  
+
+Firstly lets merge in anything new.
+
+```
+gitk --left-right 5d9b2f586...ca6e86412 -- ./bifrost/pkg/chainclients/bitcoin
+```
+
+Okay here's the node-launcher implementation checklist:
+
+`git difftool add-dash..HEAD`
+
+TODO: I think I messed up the dashDaemon in bifrost/values stagenet is not set
+to mainnet as expected.
+
+`git checkout add-dash -- dash-daemon/`
+
+find and replace dash -> decred
+
+`registry.gitlab.com/alexdcox/decred-core`
+`registry.gitlab.com/vikingshield/decred`
+
+Guess I'll need to rework the deployment section, can use my cluster launcher
+repo for that hopefully.
+
+TODO: Need to set BOTH RPC AND GRPC config somehow.
+
+- `RPC_ALLOW_IP` may not be needed
+- `*-daemon/deployment.yaml`
+  - `spec.template.spec.containers.env/command`
+- `*-daemon/values.yaml`
+  - `image.repository`
+  - `persistence.size`
+  - `service.port`
+-  `Chart.yaml`
+  - `appVersion` (needs to match gitlab registry tag)
+  
+Is viking's image using the latest version of decred?  
+Nope. Latest version is `v1.7.0`
+
+Does viking's image have a tag for the specific version in the gitlab container
+register?  
+No.
+
+Okay, I'll fork/update/take over the management.  
+Changed project name to `decred-core` to follow thorchain conventions.  
+
+Oh that reminds me to try and use the decred RPC instead of the modified
+`dcrwallet`. I think it's time to get on that.
+
+Okay so I'm seeing the gRPC endpoints being protected by tls. We don't need that, 
+we'll never be exposing it to the broader network. It'll be a bit cleaner to rip
+all the logic for that out, see their example for what I mean:  
+https://github.com/decred/dcrwallet/blob/master/rpc/documentation/clientusage.md#go
+
+The only grpc related config for dcrwallet mentioned in the docs are:
+- grpclisten
+- nogrpc
+
+The `noservertls` flag does mention it will "Disable TLS for the RPC servers".  
+Notice the plural.  
+Will it apply to grpc as well then? Let's try it...  
+
+Oh just realised the 1.7 release was yesterday. Nice.
+
+TODO: Need to remove `exit_on_sigterm` for mainnet.
+      Maybe it can be optional on the other networks with a flag.
+      Or just reduce complexity and get rid of it.
+
+```
+docker run \
+-it \
+--rm \
+--name decred \
+--net host \
+registry.gitlab.com/alexdcox/decred-core:v1.7.0
+```
+
+Running with no arguments works out the box.  
+
+```
+docker run \
+  -it \
+  -p 19556-19558:19556-19558 \
+  --rm \
+  --name decred \
+  --entrypoint /scripts/entrypoint-simnet.sh \
+  registry.gitlab.com/alexdcox/decred-core:v1.7.0
+```
+
+`docker exec decred tail -n 1 -F /root/.dcrd/logs/simnet/dcrd.log`
+
+Looks like the `dcrctl` doesn't support grpc for now.
+
+```
+docker exec decred tail -n +1 -F /root/.dcrd/logs/simnet/dcrd.log
+docker exec decred tail -n +1 -F /root/.dcrwallet/logs/simnet/dcrwallet.log
+docker exec -it decred dcrctl getblockcount
+```
+
+> 52
+
+Beautiful.
+
+Okay can use that as a base for mainnet and testnet configuration
+(which confusingly won't align with thorchain networks) here's the network
+mappings.
+
+thorchain|decred
+---|---
+mainnet|mainnet
+stagenet|mainnet
+testnet|testnet
+mocknet|simnet
+
+
+Before I do those though, I need to see about grpc.
+
+|                |main|test  |simnet |internal(used with socat)|
+|---             |--- |---   |---    |---                      |
+|dcrd p2p        |9108| 19108|  18555|                         |
+|dcrd rpc        |9109| 19109|  19556| 20556                   |
+|dcrdwallet rpc  |9110| 19110|  19557| 20557                   |
+|dcrdwallet grpc |9111| 19111|  19558| 20558                   |
+
+```
+nc -v localhost 19558                                                                                                                                            ~/go/src/gitlab.com/alexdcox/decred-core 1 ↵
+```
+
+> Connection to localhost port 19558 [tcp/\*] succeeded!
+
+That's what we want.
+
+Now with golang and the decred libraries...
+
+The potential issue with what I have now is that it is insecure, and perhaps
+they want the `node-launcher` setup to be secure.
+
+> Server TLS is disabled.  Only JSON-RPC may be used.
+
+Guess we will have to go back to TLS anyway.
+
+```
+openssl rsa -check -in 
+openssl x509 -noout -pubkey -in
+```
+
+vikingshield uses two different keys, the dcrd key is 121 bytes and the dcrwallet key is 48 bytes.
+
+From the decred docs:
+> dcrd and dcrwallet CLI Arguments
+> `--tlscurve=` Curve to use when generating TLS keypairs (default: `P-256`)
+
+Can we assume that means `secp256k1`?  
+I don't think so.  
+What about `secp256r1`?
+
+I found this:
+https://www.reddit.com/r/crypto/comments/2fe4lr/secp256k1_vs_nist_curves_which_one_to_use/
+
+which contains:
+> such as secp256r1, aka P-256
+
+Yeah looks like a TLS thing, which makes sense.
+https://www.arubanetworks.com/techdocs/ClearPass/6.9/PolicyManager/Content/CPPM_UserGuide/Cipher%20Suites/Ciphers_TLS.htm
+
+Why the disparity here?
+
+```
+openssl ecparam -name prime256v1 -genkey -noout -out /dev/stdout
+
+openssl req -x509 -sha256 -nodes -days 365 -newkey prime256v1 -keyout /dev/stdout -out /dev/stdout
+
+```
+
+Got 121 bytes, so `prime256v1` for dcrd. What about dcrwallet. How did we only get 48 bytes (384 bits)???
+
+Okay so that `BEGIN PRIVATE KEY` looks to be `pkcs8` format which can hold any type of key.  
+So what is it?  
+It could well be a secpk256k1 key, with the extra bytes being metadata.  
+
+```
+openssl asn1parse -inform DER -in <(echo "0112173c2ed4b210e95e3ac193e6aa01afcad5d229f815a5dd98c424791e6cef7680472571e134e86d877515" | xxd -r -p)
+```
+```
+ 0:d=0  hl=2 l=  46 cons: SEQUENCE
+ 2:d=1  hl=2 l=   1 prim: INTEGER           :00
+ 5:d=1  hl=2 l=   5 cons: SEQUENCE
+ 7:d=2  hl=2 l=   3 prim: OBJECT            :Ed25519
+12:d=1  hl=2 l=  34 prim: OCTET STRING      [HEX DUMP]:0420C6FE98D65786AF3241E5D0EA7E482D8BA60A5E9BDD890A80C32EE246C79B9EB8
+```
+
+So it's `Ed25519` eh?
+
+```
+/usr/local/opt/openssl@3/bin/openssl genpkey -algorithm Ed25519 -out /dev/stdout
+```
+
+There we go. Ok.  
+
+TLS keys:
+```
+program    curve      length
+dcrd       P-256      121 byte
+dcrwallet  Ed25519     48 byte
+```
+
+There's also a `PGP` in `key.txt` at the root of the directory.  
+TODO: What's that for? Can we axe?  
+
+```
+openssl x509 -text -noout -in dcrdcerts/rpc.cert
+```
+
+```
+Certificate:
+    Data:
+        Version: 3 (0x2)
+        Serial Number:
+            f1:dd:2e:5d:93:3b:90:87:e7:f1:65:71:14:33:b7:4c
+    Signature Algorithm: ecdsa-with-SHA256
+        Issuer: O=dcrd autogenerated cert, CN=pop-os
+        Validity
+            Not Before: Jul  6 09:19:18 2021 GMT
+            Not After : Jul  5 09:19:18 2031 GMT
+        Subject: O=dcrd autogenerated cert, CN=pop-os
+        Subject Public Key Info:
+            Public Key Algorithm: id-ecPublicKey
+                Public-Key: (256 bit)
+                pub:
+                    04:96:cd:54:4c:8c:44:4a:22:2d:ae:57:1f:94:f4:
+                    e5:e3:ee:91:3d:04:53:57:ef:9c:63:e9:4b:b2:e1:
+                    90:cd:09:05:a5:0a:5a:30:cc:eb:79:25:80:b3:37:
+                    47:7c:cb:2f:e1:72:06:59:68:33:1a:81:90:3b:4c:
+                    ef:8c:6c:53:14
+                ASN1 OID: prime256v1
+                NIST CURVE: P-256
+        X509v3 extensions:
+            X509v3 Key Usage: critical
+                Digital Signature, Key Encipherment, Certificate Sign
+            X509v3 Basic Constraints: critical
+                CA:TRUE
+            X509v3 Subject Key Identifier:
+                D9:22:14:A1:EA:04:51:CA:5B:03:0C:61:A2:72:9C:B2:AA:24:C2:78
+            X509v3 Subject Alternative Name:
+                DNS:pop-os, DNS:localhost, IP Address:127.0.0.1, IP Address:0:0:0:0:0:0:0:1, IP Address:192.168.0.169, IP Address:172.17.0.1, IP Address:FE80:0:0:0:8210:AD8E:36B0:4E5A, IP Address:FE80:0:0:0:42:5CFF:FE24:58CF
+    Signature Algorithm: ecdsa-with-SHA256
+         30:45:02:20:5a:61:c6:9e:32:f3:ef:25:0f:15:97:e0:37:34:
+         47:e9:90:f3:50:e8:6f:2f:26:f2:8b:2a:6a:b2:e3:e9:3a:d7:
+         02:21:00:d2:36:e9:0f:17:67:a5:7e:94:29:0e:21:63:0e:06:
+         3b:51:5b:00:eb:c3:ba:bd:b6:49:c4:11:04:47:9b:97:ca
+```
+
+```
+/usr/local/opt/openssl@3/bin/openssl x509 -text -noout -in dcrwalletcerts/rpc.cert
+```
+
+```
+Certificate:
+    Data:
+        Version: 3 (0x2)
+        Serial Number:
+            f0:a4:3f:44:bb:3b:5f:68:7f:1f:a9:66:2a:c3:fd:03
+        Signature Algorithm: ED25519
+        Issuer: O = dcrwallet autogenerated cert, CN = pop-os
+        Validity
+            Not Before: Jul  6 09:19:25 2021 GMT
+            Not After : Jul  5 09:19:25 2031 GMT
+        Subject: O = dcrwallet autogenerated cert, CN = pop-os
+        Subject Public Key Info:
+            Public Key Algorithm: ED25519
+                ED25519 Public-Key:
+                pub:
+                    16:9c:f7:71:26:f0:f4:c6:11:08:aa:59:4a:34:b7:
+                    24:07:73:6a:86:6c:de:fb:8a:73:82:5e:f2:ad:01:
+                    9b:b7
+        X509v3 extensions:
+            X509v3 Key Usage: critical
+                Digital Signature, Key Encipherment, Certificate Sign
+            X509v3 Basic Constraints: critical
+                CA:TRUE
+            X509v3 Subject Key Identifier:
+                EB:96:6D:05:28:2C:C2:88:2F:89:66:7E:2B:6D:CC:7D:10:D9:45:F3
+            X509v3 Subject Alternative Name:
+                DNS:pop-os, DNS:localhost, IP Address:127.0.0.1, IP Address:0:0:0:0:0:0:0:1, IP Address:192.168.0.169, IP Address:172.17.0.1, IP Address:FE80:0:0:0:8210:AD8E:36B0:4E5A, IP Address:FE80:0:0:0:42:5CFF:FE24:58CF
+    Signature Algorithm: ED25519
+    Signature Value:
+        a2:68:43:64:8b:9a:d0:fd:de:cd:82:b6:5a:20:45:34:b4:2b:
+        f1:6d:4c:47:11:93:97:01:6c:26:f4:99:04:01:06:99:58:b5:
+        1c:e8:3b:8b:fd:79:37:b4:8e:31:d3:40:41:ce:21:78:a2:07:
+        81:37:8e:c6:e6:51:e8:a9:d0:04
+```
+
+Okay they're both auto-generated anyway. Maybe a better strategy would be to let
+it auto-generate and then just allow the user to get them from the drive.
+
+
+### 14.02.2022 Monday
+
+Right so grpc... 
+
+Do we need to be able to configure the `dcrd` and `dcrwallet` certificates for
+grpc?
+
+Can we just proxy tls connections with socat?
+```
+socat TCP-LISTEN:LPORT,fork openssl:IP:PORT,verify=0
+```
+
+The `key.txt` was the decred PGP file verification key, renamed the file to be
+more explicit.
+
+```
+docker run \
+  -it \
+  -p 19556-19558:19556-19558 \
+  --rm \
+  --name decred \
+  --entrypoint /scripts/entrypoint-simnet.sh \
+  registry.gitlab.com/alexdcox/decred-core:v1.7.0
+```
+
+Image failed to `wget https://github.com/decred/decred-binaries/releases/download/v1.7.0/decred-v1.7.0-manifest.txt`
+
+```
+dcrctl --rpcserver=localhost getblockchaininfo
+```
+> Post "https://localhost:19556": http: server gave HTTP response to HTTPS client
+
+```
+dcrctl --rpcserver=localhost:20556 getblockchaininfo
+dcrctl getblockchaininfo
+```
+
+> gRPC server is configured with listeners, but no trusted client certificates exist (looked in /root/.dcrwallet/clients.pem)
+
+```
+/usr/local/opt/openssl@3/bin/openssl genpkey -algorithm Ed25519 -out /dev/stdout
+```
+
+```
+docker run \
+  -it \
+  --rm \
+  --entrypoint bash \
+  registry.gitlab.com/alexdcox/decred-core:v1.7.0
+```
+
+```
+apk add openssl
+mkdir /root/.dcrwallet/
+
+# Generate dcrd key
+openssl ecparam -name prime256v1 -genkey -noout -out /root/.dcrd/dcrd.key
+openssl ec -in /root/.dcrd/dcrd.key -pubout -out /root/.dcrd/dcrd.pem
+openssl req -x509 \
+  -key /root/.dcrd/dcrd.key \
+  -out /root/.dcrd/dcrd.cert \
+  -sha256 \
+  -days 3650 \
+  -subj "/O=dcrd autogenerated cert/CN=pop-os"
+
+# Generate client key
+/root/.dcrwallet/clients.pem
+
+openssl ecparam -name prime256v1 -genkey -noout -out /root/.dcrwallet/client.key
+openssl ec -in /root/.dcrwallet/client.key -pubout -out /root/.dcrwallet/client.pem
+
+openssl req \
+  -key /root/.dcrwallet/client.pem \
+  -out /root/.dcrwallet/client-req.pem \
+  -nodes \
+  -sha256 \
+  -days 3650 \
+  -subj "/O=dcrd client1 cert/CN=pop-os"
+
+# Verify dcrd cert
+openssl x509 -text -noout -in /tmp/a.cert
+
+# Generate dcrwallet key
+openssl genpkey -algorithm Ed25519 -out /root/.dcrwallet/dcrwallet.key
+openssl req -x509 \
+  -key /root/.dcrwallet/dcrwallet.key \
+  -out /root/.dcrwallet/dcrwallet.cert \
+  -sha256 \
+  -days 3650 \
+  -subj "/O=dcrwallet autogenerated cert/CN=pop-os"
+
+# Verify dcrwallet cert
+openssl x509 -text -noout -in /root/.dcrwallet/dcrwallet.cert
+```
+
+## 16.02.2022 Wednesday
+
+Just reviewed vikingshields decred image again and yeah it explicitly sets
+`-nogrpc`. There are certs for `dcrd` `dcrwallet` but no client certs for
+`dcrwallet/grpc`. It's the client certs we want to generate. Will also need some
+way of getting them out when it comes to the `node-launcher` and setting in a
+k8s configmap so that the thornode pod has access to it.
+
+So are the commands I came up with on moday enough? Going to update the scripts
+to contain that and see...
+
+Config flags I need are:  
+https://docs.decred.org/wallets/cli/dcrd-and-dcrwallet-cli-arguments/  
+https://github.com/decred/dcrctl/blob/master/config.go  
+
+```
+dcrd
+rpccert         /root/.dcrd/rpc.cert          ecdsa-with-SHA256 id-ecPublicKey
+rpckey          /root/.dcrd/rpc.key
+
+dcrwallet
+cafile          not specified in docs, unsure about this one, will omit...
+clientcafile    /root/.dcrwallet/clients.pem
+rpccert         /root/.dcrwallet/rpc.cert     ED25519
+rpckey          /root/.dcrwallet/rpc.key
+
+dcrctl
+clientcert      /root/.dcrctl/client.pem
+clientkey       /root/.dcrctl/client-key.pem
+rpccert         /root/.dcrd/rpc.cert
+```
+
+Added all those config values explicitly. Going to cause the docker script to
+freeze after writing them so I can run each binary seperately and see if they
+complain.
+
+```
+docker run \
+  -it \
+  -p 19556-19558:19556-19558 \
+  --rm \
+  --name decred \
+  --entrypoint bash \
+  registry.gitlab.com/alexdcox/decred-core:v1.7.0
+```
+
+```
+. /scripts/core.sh
+generate_certificates
+write_dcrd_config
+write_dcrctl_config
+write_dcrwallet_config
+SIGNER_PASSWD=password
+/usr/bin/expect <<EOD
+spawn dcrwallet --simnet --create --pass=${SIGNER_PASSWD}
+expect "wallet encryption?"
+send "y\r"
+expect "public data?"
+send "n\r"
+expect "Do you have an existing wallet seed you want to use?"
+send "y\r"
+expect "(followed by a blank line):"
+send "b280922d2cffda44648346412c5ec97f429938105003730414f10b01e1402eac\r\r"
+expect "The wallet has been created successfully."
+wait
+EOD
+```
+
+```
+docker exec -it decred bash
+```
+
+> Address `127.0.0.1:` may not be used as a listener address for both RPC servers
+
+dcrd
+> RPCS: http: TLS handshake error from 127.0.0.1:35760: remote error: tls: bad certificate
+
+dcrwallet
+> [ERR] SYNC: Wallet synchronization stopped: rpcsyncer.Run: x509: cannot validate certificate for 127.0.0.1 because it doesn't contain any IP SANs
+
+```
+openssl x509 -text -noout -in /root/.dcrd/rpc.cert
+openssl x509 -text -noout -in /root/.dcrwallet/rpc.cert
+```
+
+```
+ips=$(ifconfig | grep -Eo 'addr:[0-9.]*' | sed 's/addr:/IP Address:/g' | tr '\n' ', ')
+
+-addext "subjectAltName = DNS:pop-os, DNS:localhost, $ips"
+```
+
+```
+docker cp decred:/root/.dcrctl/client.pem /tmp/client.cert
+docker cp decred:/root/.dcrctl/client-key.pem /tmp/client.key
+docker cp decred:/root/.dcrwallet/clients.pem /tmp/server.cert
+```
+
+Can I use that now for grpc?
+
+```
+netstat -vanp tcp | grep 19558
+```
+
+> transport: authentication handshake failed: EOF
+
+Wonder if it's because of listening on 127 not 0.0...
+
+> "transport: authentication handshake failed: x509: certificate signed by unknown authority"
+
+Checking if  the client cert been signed by the server cert...
+
+```
+/usr/local/opt/openssl@3/bin/openssl verify -verbose -CAfile /tmp/server.cert /tmp/client.cert
+```
+
+> /tmp/client.cert: OK
+
+Huh. 
+
+Maybe it's the client complaining about the server cert then?
+
+```
+docker cp decred:/root/.dcr
+```
+
+### 23.02.2022 Wednesday
+
+`find /private/tmp -name '*.pem' -or -name '*.key' -or -name '*.cert' -exec rm {} \+`
+
+```
+mkdir /tmp/decred
+
+docker cp decred:/root/.dcrwallet/rpc.cert /tmp/decred/wallet-rpc.cert
+docker cp decred:/root/.dcrwallet/rpc.key /tmp/decred/wallet-rpc.key
+docker cp decred:/root/.dcrwallet/clients-ca.key /tmp/decred/wallet-clients-ca.key
+docker cp decred:/root/.dcrwallet/clients.pem /tmp/decred/wallet-clients.pem
+docker cp decred:/root/.dcrctl/client.pem /tmp/decred/ctl-client.pem
+docker cp decred:/root/.dcrctl/client-key.pem /tmp/decred/ctl-client-key.pem
+```
+
+I wrote a go script to attempt the grpc connection with every single possible
+permutation of certificate configuration using the above. Not one of them
+worked.
+
+Going to create a minimal grpc demo using the decred certificate scripts to
+confirm my approach here.
+github.com/alexdcox/grpc-with-tls
+
+`protoc --go_out=. --go_opt=paths=source_relative ./grpc/grpc.proto`
+
+```
+protoc --go_out=. --go_opt=paths=source_relative \
+    --go-grpc_out=. --go-grpc_opt=paths=source_relative \
+    schema/schema.proto
+```
+
+Is it:
+- server side tls
+- mutual tls
+
+Okay so I learnt a few things from that. dcrwallet definitely uses mutual tls
+and I wasn't using the appropriate CA when connecting from the client.
+
+```
+rm -rf /tmp/decred
+mkdir /tmp/decred
+docker cp decred:/root/.dcrd/ca.cert /tmp/decred/ca.cert
+docker cp decred:/root/.dcrctl/client.cert /tmp/decred/client.cert
+docker cp decred:/root/.dcrctl/client.key /tmp/decred/client.key
+```
+
+```
+docker run \
+  -it \
+  -p 19556-19558:19556-19558 \
+  --rm \
+  --name decred \
+  --entrypoint /scripts/entrypoint-simnet.sh \
+  registry.gitlab.com/alexdcox/decred-core:v1.7.0
+```
+
+```
+docker run \
+  -it \
+  -p 19556-19558:19556-19558 \
+  -v $(pwd)/scripts:/scripts \
+  --rm \
+  --name decred \
+  --entrypoint bash \
+  registry.gitlab.com/alexdcox/decred-core:v1.7.0
+```
+
+```
+. /scripts/core.sh && generate_certificates
+```
+
+No openssl3 for alpine, building from source...
+
+```
+mkdir /tmp/openssl && cd $_
+wget https://www.openssl.org/source/openssl-3.0.1.tar.gz
+tar -xvf ./openssl*
+cd ./openssl*/
+apk add perl perl-text-template gcc make musl-dev
+
+apk add py-configobj libusb py-pip linux-headers # not sure how many of these are relevant - shotgun approach
+
+./Configure
+make
+make test
+make install
+```
+
+Prerequisites:
+-  A "make" implementation
+-  Perl 5 with core modules (please read [NOTES-PERL.md](NOTES-PERL.md))
+-  The Perl module `Text::Template` (please read [NOTES-PERL.md](NOTES-PERL.md))
+-  an ANSI C compiler
+-  a development environment in the form of development libraries and C header files
+-  a supported operating system
+
+Compiled. Was considering how to update my scripts while that went along so as
+to make do with the openssl version 1.1 that is available via the alpine
+package manager. I think you just need to create the CSRs separately, a few
+extra commands needed.
+
+```
+docker commit decred registry.gitlab.com/alexdcox/decred-core:openssl3
+docker images
+```
+
+Daymn, 950MB. I haven't cleared any of the complication prerequisites but still,
+that's a lot. Adds space concerns to the security concerns of me including more
+binaries in the docker image.
+
+### 01.03.2022 Tuesday
+
+So last time I was trying to install `openssl3` because v1 doesn't allow the
+exact commands I used to generate the certs. Perhaps this is a bad strategy.
+Will try again quickly now with more commands, just trying to get the job done
+without that hassle.
+
+So I'm not able to use this format:
+
+```
+openssl req \
+  -x509 \
+  -CA /root/.dcrd/ca.cert \
+  -CAkey /root/.dcrd/ca.key \
+  -key /root/.dcrwallet/rpc.key \
+  -out /root/.dcrwallet/rpc.cert \
+  -sha256 \
+  -days 3650 \
+  -subj "/O=dcrwallet autogenerated cert/CN=decred" \
+  -addext "subjectAltName = DNS:localhost, $ips"
+```
+
+because `CA` and `CAkey` aren't supported in the older `openssl` version, which
+also means I have to -
+
+wait why can't we just let `dcrd` and `dcrwallet` auto-generate their certs?  
+I think the idea was to be able to set the key via an environment variable.  
+Okay, the key looks like this:
+
+```
+MC4CAQAwBQYDK2VwBCIEIPVi1kRwA5bw57kS9dnpT1aRvdl8UztI92R2l16EDx0o
+```
+
+So we could provide that with:
+```
+DCRD_RPC_KEY
+DCRWALLET_RPC_KEY
+DCRCTL_CLIENT_KEY
+```
+Buuut, we still need to fetch the CA cert for rpc, which means we need to either
+provide a static ca key/cert or use `docker cp` after the container has started
+in the `node-launcher`.
+
+Another option: require the certificates to be mounted via a docker volume as
+single files. Well, it could be optional, but the startup script could be
+written in a way to not create the CA key/cert if they already exist.
+
+Okay I've changed the setup script to 'handle' the following file mounts:
+```
+Path
+/root/.dcrd/ca/ca.key
+/root/.dcrd/ca/ca.cert
+/root/.dcrd/rpc.key
+/root/.dcrd/rpc.cert
+/root/.dcrwallet/rpc.key
+/root/.dcrwallet/rpc.cert
+/root/.dcrctl/client.key
+/root/.dcrctl/client.cert
+```
+
+So:
+1. If I do nothing, I should be able to get the grpc files with:
+```
+  docker cp decred:/root/.dcrd/ca/ca.cert ./certs/ca.cert
+  docker cp decred:/root/.dcrctl/client.cert ./certs/client.cert
+  docker cp decred:/root/.dcrctl/client.key ./certs/client.key
+```
+
+2. If I generate the tls files outside the container and then mount them in the
+right places, they should be picked up and I should have what I need to
+establish a grpc connection.
+
+Time to test...  
+1: 
+
+> rpc error: code = Unavailable desc = connection error: desc = "transport: authentication handshake failed: EOF"
+
+`dcrctl getblockcount`
+
+> Post "https://127.0.0.1:19556": x509: cannot validate certificate for 127.0.0.1 because it doesn't contain any IP SANs
+
+Ah, not seeing any `X509v3 extensions`.
+
+Had to do a bit of trial and error with the openssl config file followed by a
+rework of the way I'm setting SAN - iterating through the ips and appending them
+to the config file. It seems to be working now. Back to testing (1)...
+
+Same rpc error :( 
+
+```
+/usr/local/opt/openssl@3/bin/openssl verify -verbose -CAfile ./certs/ca.cert ./certs/client.cert
+```
+
+```
+O = decred self-signed ca, CN = decred
+error 79 at 1 depth lookup: invalid CA certificate
+O = decred self-signed ca, CN = decred
+error 32 at 1 depth lookup: key usage does not include certificate signing
+error ./certs/client.cert: verification failed
+```
+
+Updated config to ensure hash.
+
+```
+./certs/client.cert: OK
+```
+
+Still getting grpc error though. Perplexing.
+
+```
+nc -vvv localhost 19558
+```
+
+> Connection to localhost port 19558 [tcp/\*] succeeded!
+
+Getting the success message, but the connection is immediately terminated by the
+remote host. Maybe it's rejecting my host machine ip?
+
+Setting `debuglevel=trace` on `dcrwallet` to hopefully shine some light on this.  
+Nope, nothing there.
+
+`netstat -nplt`
+
+Port not even open. Why?
+
+> gRPC server is configured with listeners, but no trusted client certificates exist (looked in /root/.dcrctl/ca/ca.cert)
+
+Oh. Set to wrong location. So the `dcrctl` uses rpc not grpc which explains why
+that could connect but my go code couldn't. Port is now open.  
+
+The eagle has landed.  
+
+So next question, was the `ImportPrivateKey` grpc method added by viking?  
+
+https://github.com/decred/dcrwallet/blob/master/rpc/walletrpc/api.pb.go  
+
+Nope. It's on the official. What was it viking added?  
+
+https://github.com/vikingshield/dcrwallet  
+https://github.com/vikingshield/dcrwallet/commit/55da3f7c391382966d4c046bff7ed1311b4bfeb2
+
+`importpublickey` right. i.e. watch address.
+
+https://github.com/decred/dcrwallet/blob/master/rpc/walletrpc/api.pb.go
+
+Okay it's coming back to me. It was `CreateWatchingOnlyWalletResponse`.
+
+For most of the chains we're using `ImportAddressRescan`.  
+Perhaps we want to use `ImportScriptRequest` for decred instead.  
+
+So I need to go:
+public key bytes -> p2pkh script -> hex encoded script
+
+Alright so that's set up with this address:  
+`SSqbTycxZB3qui121U3f1qwmZGUVTtB7cJq`
+
+I'm expecting to be able to send to that and immediately query the balance:
+```
+dcrctl --wallet sendtoaddress SSqbTycxZB3qui121U3f1qwmZGUVTtB7cJq 1
+dcrctl --wallet getreceivedbyaddress SSqbTycxZB3qui121U3f1qwmZGUVTtB7cJq
+```
+
+Nothing.  
+
+```
+dcrctl --wallet getnewaddress
+dcrctl --wallet sendtoaddress SsnbEmxCVXskgTHXvf3rEa17NA39qQuGHwQ 1
+dcrctl --wallet getreceivedbyaddress SsnbEmxCVXskgTHXvf3rEa17NA39qQuGHwQ
+```
+
+```
+dcrctl --wallet importscript 
+```
+
+```
+dcrctl decodescript 76a914c7a380481ddf3c1bbfd8ec007e6a316e2152165488ac
+```
+
+When I decode the script I'm getting a different address back.
+
+Alright that's my day. So tomorrow I need to look into why  
+`dcrutil.NewAddressPubKey(pk.PubKey().SerializeCompressed(), chainparams)`  
+is interpreting my standard ecdsa v0 keys as schorrr ecdsa keys, while the
+constraints don't seem to allow for a version byte - 33 byte compressed pubkey
+required as the argument.
+
+- If I do everything manually my answer and the dcrctl address lines up.
+- If I use the decred library they don't.
+
+Is the decred library broken? Am I not providing the key correctly? For tomoz...
+
+### 02.03.2022 Wednesday
+
+```go
+const (
+  CurveP256 CurveID = iota
+  CurveP384
+  CurveP521
+  Ed25519
+
+  // PreferredCurve is the curve that should be used as the application default.
+  PreferredCurve = Ed25519
+)
+```
+
+Switched to dash to handle PR feedback and now back to decred.
+
+In `github.com/decred/dcrd/dcrutil/util_test.go` there's some very helpful 
+structs:
+```
+main
+    pubKeyID:     [2]byte{0x13, 0x86}, // starts with Dk
+    pkhEcdsaID:   [2]byte{0x07, 0x3f}, // starts with Ds
+    pkhEd25519ID: [2]byte{0x07, 0x1f}, // starts with De
+    pkhSchnorrID: [2]byte{0x07, 0x01}, // starts with DS
+    scriptHashID: [2]byte{0x07, 0x1a}, // starts with Dc
+    privKeyID:    [2]byte{0x22, 0xde}, // starts with Pm
+
+mock
+    pubKeyID:     [2]byte{0x28, 0xf7}, // starts with Tk
+    pkhEcdsaID:   [2]byte{0x0f, 0x21}, // starts with Ts
+    pkhEd25519ID: [2]byte{0x0f, 0x01}, // starts with Te
+    pkhSchnorrID: [2]byte{0x0e, 0xe3}, // starts with TS
+    scriptHashID: [2]byte{0x0e, 0xfc}, // starts with Tc
+    privKeyID:    [2]byte{0x23, 0x0e}, // starts with Pt
+```
+
+If I spin up a new mocket what address will I get? Ts? or Te?
+
+`SsnbEmxCVXskgTHXvf3rEa17NA39qQuGHwQ` oh right - simnet. I'm guessing the second
+letter `s` means it is a typical ecdsa key.
+
+```
+dcrctl decodescript 76a914edb1bd20b973ca4da8347eef572a27052e63be9b88ac
+{
+  "asm": "OP_DUP OP_HASH160 edb1bd20b973ca4da8347eef572a27052e63be9b OP_EQUALVERIFY OP_CHECKSIG",
+  "reqSigs": 1,
+  "type": "pubkeyhash",
+  "addresses": [
+    "Ssr25ktp4bXqAAkcn7dTorLVaiy9YEzHbFX"
+  ],
+  "p2sh": "ScbJuZjiLE7c78GvGa92Z4JkuJwcf49KrjV"
+}
+```
+
+Beautiful! I'm taking an address string and correctly converting it to the script.
+
+Now can we send that via grpc, then send some monies, then see that balance
+reflected by grpc?...
+
+Well, that's the end of my day. This is the output of my script as it stands:
+
+```
+Spendable balance:  82502.17978556 DCR
+private key (32 bytes): 06d088f769617c9192b5001ac3c4cf15766f3c0964d30183a2b260597b1003a8
+public key (33 bytes): 02714d177623d5528d9328bb6424869d363a1ea98fe4a3afbdbba11f54c44a7252
+wif:  PsUQAsDBRcCYLQC46qkVfYQ6yTwjkMNm37dqAEwiXvHmNnM71Yy9C
+ecdsa secp256k1 v0 p2pkh address: SsXBvwtSrcWLd3tAEdwV6TmiGLStc488q1L
+verified? SsXBvwtSrcWLd3tAEdwV6TmiGLStc488q1L
+script:   76a9141f242766ad66365f585cfe19da093828c7ad7cf088ac
+Sending watch address/script via grpc...
+{
+  "p2sh_address": "ScvwmSFkUNHg3bnuHzWLWWWdJH8nuAkYXdV"
+}
+Send 'sendtoaddress' command via rpc... SsXBvwtSrcWLd3tAEdwV6TmiGLStc488q1L
+send response raw "28bba5045e3e6e3b2ce5b3443904a4790737fac65946aa92f6b8738b6d11b306"
+Waiting patiently for 5s...
+Checking balance of address via rpc
+balance response raw 0
+```
+
+Everything looks good, except the wallet isn't actually watching the address.  
+The p2sh is exactly what we expect:  
+
+```
+dcrctl decodescript 76a9141f242766ad66365f585cfe19da093828c7ad7cf088ac
+{
+  "asm": "OP_DUP OP_HASH160 1f242766ad66365f585cfe19da093828c7ad7cf0 OP_EQUALVERIFY OP_CHECKSIG",
+  "reqSigs": 1,
+  "type": "pubkeyhash",
+  "addresses": [
+    "SsXBvwtSrcWLd3tAEdwV6TmiGLStc488q1L"
+  ],
+  "p2sh": "ScvwmSFkUNHg3bnuHzWLWWWdJH8nuAkYXdV"
+}
+```
+
+The transaction went through and looks good:
+
+```
+dcrctl getrawtransaction 28bba5045e3e6e3b2ce5b3443904a4790737fac65946aa92f6b8738b6d11b306 1
+{
+  "hex": "01000000014a93eb2c0d7716c560ca2ea1a7a0fdae839d0f675e80ff0dc07e2fd16bcfc6ee0200000001ffffffff024d1528d20100000000001976a914374ba0514c1639fb7d130f2696795144620efe7288ac00e1f5050000000000001976a9141f242766ad66365f585cfe19da093828c7ad7cf088ac0000000000000000012f001ed801000000aa000000010000006a47304402203e89249d87cbd9fe3e68ae101f507cea4eaa69dd3bb608ade2ec71d0fbd9e89702205f3e8ec322597a8740ca358f9bfdb0d7291aee5682d2d20f979e0ce6dacced5c0121029d168f39cf856a0fe87f2b0092d06a26824ae1fc46672125d6ee8a062e6b984e",
+  "txid": "28bba5045e3e6e3b2ce5b3443904a4790737fac65946aa92f6b8738b6d11b306",
+  "version": 1,
+  "locktime": 0,
+  "expiry": 0,
+  "vin": [
+    {
+      "txid": "eec6cf6bd12f7ec00dff805e670f9d83aefda0a7a12eca60c516770d2ceb934a",
+      "vout": 2,
+      "tree": 1,
+      "sequence": 4294967295,
+      "amountin": 79.20812079,
+      "blockheight": 170,
+      "blockindex": 1,
+      "scriptSig": {
+        "asm": "304402203e89249d87cbd9fe3e68ae101f507cea4eaa69dd3bb608ade2ec71d0fbd9e89702205f3e8ec322597a8740ca358f9bfdb0d7291aee5682d2d20f979e0ce6dacced5c01 029d168f39cf856a0fe87f2b0092d06a26824ae1fc46672125d6ee8a062e6b984e",
+        "hex": "47304402203e89249d87cbd9fe3e68ae101f507cea4eaa69dd3bb608ade2ec71d0fbd9e89702205f3e8ec322597a8740ca358f9bfdb0d7291aee5682d2d20f979e0ce6dacced5c0121029d168f39cf856a0fe87f2b0092d06a26824ae1fc46672125d6ee8a062e6b984e"
+      }
+    }
+  ],
+  "vout": [
+    {
+      "value": 78.20809549,
+      "n": 0,
+      "version": 0,
+      "scriptPubKey": {
+        "asm": "OP_DUP OP_HASH160 374ba0514c1639fb7d130f2696795144620efe72 OP_EQUALVERIFY OP_CHECKSIG",
+        "hex": "76a914374ba0514c1639fb7d130f2696795144620efe7288ac",
+        "reqSigs": 1,
+        "type": "pubkeyhash",
+        "addresses": [
+          "SsZPeT5SLPf53PREx5aF4T3YHyq1N2jQ1qu"
+        ],
+        "version": 0
+      }
+    },
+    {
+      "value": 1,
+      "n": 1,
+      "version": 0,
+      "scriptPubKey": {
+        "asm": "OP_DUP OP_HASH160 1f242766ad66365f585cfe19da093828c7ad7cf0 OP_EQUALVERIFY OP_CHECKSIG",
+        "hex": "76a9141f242766ad66365f585cfe19da093828c7ad7cf088ac",
+        "reqSigs": 1,
+        "type": "pubkeyhash",
+        "addresses": [
+          "SsXBvwtSrcWLd3tAEdwV6TmiGLStc488q1L"
+        ],
+        "version": 0
+      }
+    }
+  ],
+  "blockhash": "35e1759a62ef22ba01d625d8a8a8ed2f2616a27f64d3aa417fccb674551d09dc",
+  "blockheight": 331,
+  "blockindex": 1,
+  "confirmations": 38,
+  "time": 1646284687,
+  "blocktime": 1646284687
+}
+```
+
+Alas:
+
+```
+dcrctl --wallet getreceivedbyaddress SsXBvwtSrcWLd3tAEdwV6TmiGLStc488q1L
+```
+
+> 0
+
+I'm a little stumped. I'm setting:
+
+```
+  importRsp, err := walletServiceClient.ImportScript(context.Background(), &pb.ImportScriptRequest{
+    Script:            scriptBytes,
+    Rescan:            true,
+    ScanFrom:          0,
+    RequireRedeemable: false,
+  })
+```
+
+...scan the blockchain for missed transactions and start from block 0. You can
+see `38` confirmations before I ran the last `getreceivedbyaddress` command.  
+
+If we import the wif:
+
+```
+dcrctl --wallet importprivkey PsUQAsDBRcCYLQC46qkVfYQ6yTwjkMNm37dqAEwiXvHmNnM71Yy9C
+```
+
+Still 0 balance, even after `rescanwallet`. But the tx above clearly shows 1
+decred moving into that address.
+
+```
+dcrctl --wallet listaddresstransactions '["SsXBvwtSrcWLd3tAEdwV6TmiGLStc488q1L"]'
+```
+
+That comes up empty. Very interesting.
+
+```
+dcrctl --wallet searchrawtransactions "SsXBvwtSrcWLd3tAEdwV6TmiGLStc488q1L"
+```
+
+Okay. It's in the raw transactions.
+
+```
+dcrctl --wallet validateaddress "SsXBvwtSrcWLd3tAEdwV6TmiGLStc488q1L"
+dcrctl --wallet listunspent 1 99999999 "[]" imported
+dcrctl --wallet existsaddress SsXBvwtSrcWLd3tAEdwV6TmiGLStc488q1L
+dcrctl --wallet getreceivedbyaddress SsXBvwtSrcWLd3tAEdwV6TmiGLStc488q1L
+dcrctl --wallet listreceivedbyaddress 1 true false
+dcrctl --wallet listaddresstransactions '["SsXBvwtSrcWLd3tAEdwV6TmiGLStc488q1L"]'
+dcrctl --wallet getaddressesbyaccount "imported"
+```
+
+It's not in the imported list. Right. So I need to make sure my wif imports the
+address I'm looking at to help debug this.
+
+Ahh. So it's actually using the p2sh_address as the address. I'm doing it wrong.
+Using the wif now actually sets the p2pkh address, but the importscript command
+only watches the script value. Scripts. Hmmmm.
+
+The other option is `importxpub` could just set the x part to 0s and hope it can
+determine the root address at least. Will try that next time.
+
+### 03.03.2022 Thursday
+
+Okay can we use import xpub with a standard public key?
+
+xpub format spec:  
+https://github.com/bitcoin/bips/blob/master/bip-0032.mediawiki  
+
+`dcrctl --wallet importxpub alex spubVNx6fk6e22GL2gD1rmxdAHRCkUErRkMjuKiywhaeWEr9o6YPKXSeZ4KYqdY7cR1e2MkuHGbvjBinzyNG63G7JBFyvcqLacGdwJNgJCiiYfs`
+
+`dcrctl --wallet getaddressesbyaccount "alex"`
+
+> []
+
+If I call getnewaddress on that account the wallet will add the first child,
+but even then it doesn't match what I'm deriving. Going to trial and error that...
+
+### 07.03.3022 Monday
+
+Did an hour on dash, now for decred.
+
+So I got to trying to import xpub versions of an address...
+
+SsbD9dRnivFTnTqEk98RZostasaHGDWbgMf
+
+I really doubt having a null chaincode will work, now that I think about this.
+
+Right at this point I'm going to talk to the decred devs. I believe viking's
+approach was probably the best. The problem with using `CreateWatchingOnlyWallet`
+is that it requries an extended key. I'm just wanting to send a normal key.
+
+Wait so why not just convert the key to an xpub? Well I believe importing an
+xpub and running getaddress will actually access child 0 first. I'm technically
+running at the root. I don't know if there is a way to find out what the parent
+key would be for a pubkey. I'd have to create the chaincode backwards, I just
+don't know how to go about that.
+
+```
+dcrctl --wallet importprivkey ...
+dcrctl --wallet getaddressesbyaccount imported
+```
+
+Yeah I can confirm that starts at child 0, rather than root.
+
+```
+dcrctl --wallet importxpub test spubVNx6fk6e22GL1zPjLXxHvqfj4Frtgez9Qn2oFARNi6kciQUFfqWf7qFmUPLNdcAbN7bBURTS99tp2x64jTq6NYFLH2Zz2sAynSvm8PyTEhp
+dcrctl --wallet getnewaddress test
+dcrctl --wallet getaddressesbyaccount test
+
+dcrctl --wallet importxpub t1 spubVRyvs5Abox6RUimu86sVCpt3d9K3ZhYCr8EsydtQfEswBJi6W4nMxbS97pxWh2Jt5q4Te7oetBhndPesR9wse9q4vqwk3wnku2zRLsS2WKs
+dcrctl --wallet getnewaddress t1
+
+dcrctl --wallet importxpub t2 spubVNx6fk6e22GL3RdWaKTqEpp7RfTNtdvcdJ9paQwyxoYpRSLSAiuXyU95N8R2xYmpRctA5zEjYXavAaedNRksW81HTRnRBDUSdUXjS52b9Y9
+dcrctl --wallet getnewaddress t2
+
+dcrctl --wallet importxpub t3 spubVNx6fk6e22GL3BpU4aTHSHjNKHLrfS8XoSepKtbQVwQ1ZhvbZBPUGTHNyxXYKqma1LSue5yDeuVS9bpfhA2raBg1EPD9UeKiTRnPEpuNjzn
+dcrctl --wallet getnewaddress t3
+```
+
+Right I can confirm `importxpub` also derives the next child down at index 0. So
+even if I had a keypair and made up some chaincode, it would immediately derive,
+which I don't want. Need to bring this up with the decred devs now...
+
+--------------------------------------------------
+
+Hey guys. I'm working on the decred/thorchain integration and have been
+revisiting if it's possible using official `dcrwallet` endpoints to watch an
+address. It seems this isn't supported:
+
+- `importxpub`
+  I only have a standard public key. If I convert to an xpub this rpc method will
+derive child 0, which will be one layer lower than my key.
+- `importprivkey`
+  I simply don't have this data.
+- `importscript`
+  I tried to use the hash of the p2pkh script, but it seems that this rpc doesn't
+facilitate my use case.
+
+The grpc endpoint `CreateWatchingOnlyWallet` is equivalent to `importxpub` -
+which I can't use for the reasons above. Would it be possible to add this
+functionality in a command such as `importpubkey` to `dcrwallet`? PoC was
+written by `vikingshield` here:
+https://github.com/vikingshield/dcrwallet/tree/add-importpubkey
+
+--------------------------------------------------
+
+Okay I've got that ball rolling. In the meantime I'll fall back to VS's approach.
+
+Testing the pubkey import:
+
+```
+dcrctl importpubkey 02e5820678a20fd929c7cf5b492228c3b5b3160a0abdc3decd0c7ee4d93fe3036b
+dcrctl --wallet importpubkey 02e5820678a20fd929c7cf5b492228c3b5b3160a0abdc3decd0c7ee4d93fe3036b
+```
+
+```
+curl \
+  -i \
+  -u thorchain:password \
+  -X POST \
+  -H "Content-Type: application/json" \
+  --data  '{"jsonrpc":"1.0", "id": 1, "method":"importpubkey", "params": ["02e5820678a20fd929c7cf5b492228c3b5b3160a0abdc3decd0c7ee4d93fe3036b"]}' \
+  localhost:19557
+
+dcrctl --wallet getaddressesbyaccount imported
+
+dcrctl --wallet getnewaddress
+```
+
+```
+tail -F /root/.dcrwallet/dcrwallet.log
+```
+
+> Wallet synchronization stopped: rpcsyncer.Run: advertised API version 7.0.0 incompatible with required version 6.0.0
+
+So the wallet drift has already become too significant. Guess I'll update the VS
+`dcrwallet` then...
+
+Right I'm part way migrating VS's wallet from release 1.6 to 1.7. The decred
+devs have moved around some core things such as `dcrutil.Address` to
+`stdaddress.Address`.
+
+I'm seeing some things not resolving in GoLand even though they're written the
+same way as in the official release. Need to continue with this tomorrow.
+
+### 08.03.2022 Tuesday
+
+Okay fixing `dcrwallet`. Think I'll spend the rest of the week on decred.
+
+No command help in `helpdescs_en_US.go` for `importpubkey`.
+
+Need to regenerate the docs:  
+`go generate ./...`
+
+> wallet/wallet.go:2893: running "stringer": exec: "stringer": executable file not found in $PATH
+
+```
+//go:generate stringer -type=TicketStatus -linecomment
+```
+
+```
+go install golang.org/x/tools/cmd/stringer@latest
+```
+
+Okay brought the 1.7 dcrwallet changes into VS 1.6 to update it, fixed broken
+tests, added missing importpubkey rpc help. Pushed to my repo. Updating docker
+decred-core container to use my updated dcrwallet. Updated build container to
+golang v1.16.
+
+NOTE: The dcrwallet repo I've been modifying is at:  
+`/go/src/github.com/vikingshield/dcrwallet` with the following git remotes:  
+- `origin`, viking's, github.com/vikingshield/dcrwallet
+- `official`, github.com/decred/dcrwallet
+- `adc`: my repo, github.com/alexdcox/dcrwallet
+
+```
+curl \
+  -i \
+  -u thorchain:password \
+  -X POST \
+  -H "Content-Type: application/json" \
+  --data  '{"jsonrpc":"1.0", "id": 1, "method":"importpubkey", "params": ["02e5820678a20fd929c7cf5b492228c3b5b3160a0abdc3decd0c7ee4d93fe3036b"]}' \
+  localhost:19557
+
+dcrctl --wallet getaddressesbyaccount imported
+```
+
+Right everything is back up and running. Mentally zooming out, where am I?
+- [x] Re-merge develop into decred branch, rerun tests
+- [ ] Start on the xchain branch
+- [ ] `node-launcher`, check values (cpu/mem/storage), make swap, submit PR
+
+https://github.com/xchainjs/xchainjs-lib/pull/410
+
+Here are the git remotes:  
+- `origin` https://github.com/xchainjs/xchainjs-lib
+- `vikingshield` https://github.com/vikingshield/xchainjs-lib/tree/issue-409/add-decred
+- `adc` https://github.com/alexdcox/xchainjs-lib
+
+There are two branches:  
+`vikingshield/991-add-decred`  
+`vikingshield/issue-409/add-decred`  
+
+`gco vikingshield/issue-409/add-decred`
+
+Looking at the xchainjs PR on github.
+
+25 files changed. Lots of comments looks like there might be quite a bit of
+sorting out here to do.
+
+Main question: do the tests actually pass? How do I run them?  
+`yarn && yarn test && yarn e2e`
+
+Even `yarn` didn't work:
+> Error running install script for optional dependency: "/Users/adc/go/src/github.com/xchainjs-lib/node_modules/node-hid: Command failed.
+
+Reading prerequisites...  
+`npx lerna bootstrap`  
+
+Now yarn finished. wtf.  
+Tests have errors:  
+
+> Property 'synth' is missing in type '{ chain: Chain.Decred; symbol: string; ticker: string; }' but required in type 'Asset'
+
+> Module '"@xchainjs/xchain-util"' has no exported member 'AssetDCR'.
+
+```
+cd packages/xchain-util
+yarn build
+```
+
+> Error loading `tslib` helper library.
+
+Had to switch to an older version of node for this:
+`nvm install --lts`
+
+Removing and re-installing `node_modules`.
+
+```
+cd packages/xchain-util
+yarn link
+cd ../xchain-decred
+yarn link @xchainjs/xchain-util
+```
+
+> Property 'Stagenet' does not exist on type 'typeof Network'.
+
+```
+npx lerna link
+npx lerna run build
+```
+
+You have to use the no-verify flag to bypass husky pre-commit linting:
+```
+gcam "WIP" --no-verify
+```
+
+Just quickly seeing if the tests actually work on master...
+
+```
+rm -rf node_modules
+npx lerna bootstrap
+yarn test
+```
+
+Yeah cosmos package breaks tests on the master branch because:  
+> Cannot find module '@xchainjs/xchain-cosmos' or its corresponding type declarations.
+
+It can't find itself.
+
+```
+npx lerna link
+```
+
+I'm in `xchainjs-lib/packages/xchain-thorchain` and running `yarn build` gives:  
+> Cannot find module '@xchainjs/xchain-cosmos'
+
+I've already ran `npx lerna link` and I can see the symlink:
+`ls -la ./node_modules/@xchainjs/xchain-cosmos`
+
+> ./node_modules/@xchainjs/xchain-cosmos -> ../../../xchain-cosmos
+
+```
+cat ./node_modules/@xchainjs/xchain-cosmos/package.json
+```
+
+That's infuriating. I've checked:
+- `xchain-thorchain` requests cosmos version `^0.16.1` and the current is `0.16.1`
+- the symlink is in the correct place after running bootstrap/link
+- the import is an  exact match with the package.json name `@xchainjs/xchain-cosmos`
+- ...which is also an exact match with the directory path
+
+GOT IT!!! A load of other sibling packages were being imported fine, turns out
+they were built already.
+
+Ethereum failed:  
+> missing revert data in call exception (code=CALL_EXCEPTION, version=providers/5.4.5)
+
+That was some kind of timing issue. Ran again and all tests passed. OK.
+
+```
+rm -rf ./node_modules && \
+rm -rf ./packages/xchain-bitcoin/node_modules && \
+rm -rf ./packages/xchain-crypto/node_modules && \
+rm -rf ./packages/xchain-doge/node_modules && \
+rm -rf ./packages/xchain-terra/node_modules && \
+rm -rf ./packages/xchain-bitcoincash/node_modules && \
+rm -rf ./packages/xchain-binance/node_modules && \
+rm -rf ./packages/xchain-cosmos/node_modules && \
+rm -rf ./packages/xchain-decred/node_modules && \
+rm -rf ./packages/xchain-polkadot/node_modules && \
+rm -rf ./packages/xchain-litecoin/node_modules && \
+rm -rf ./packages/xchain-ethereum/node_modules && \
+rm -rf ./packages/xchain-client/node_modules && \
+rm -rf ./packages/xchain-thorchain/node_modules
+```
+
+```
+npx lerna bootstrap
+yarn test
+```
+
+Huh, this time no errors on the decred branch. How tempremental.  
+Ahh it does include my `WIP` commit.  
+Switched that to a proper commit.  
+
+Tests show this warning:  
+> Rate lookup via Thorchain failed: Error: Thornode API /inbound_addresses does not contain fees for DCR
+
+`xchain-decred` doesn't actually have `__mocks__` directory. Bad news bears.
+
+Need to add a dash fee response. For that, I need to be able to generate a dcr
+address from a thorchain encoded pubkey. Added a new function to my crypto
+tools repo for that.
+
+`should do broadcast a vault transfer with a memo (30477 ms)` is failing:  
+> ERR running test Error: No utxos to send
+
+How do I run tests with a debugger?  
+```
+node --inspect-brk node_modules/.bin/jest --runInBand
+node --inspect-brk ../../node_modules/.bin/jest --runInBand --clearCache --detectOpenHandles --forceExit
+```
+
+Gave up on that, it just hangs indefinitely. Another thing to do is set
+`it.once` instead of just `it`, to single out tests, and iterate much more
+quickly.
+
+Now the vault test has mysteriously started working. Running in isolation,
+passes, running with the others, fails. Hmmmmm.
+
+Also noticed a handful of `await sleep(...)` calls in the decred client slowing
+down the tests. Alarm bells are ringing...
+
+I think it may have something to do with making real requests to `dcrdata.org`.
+Someone needs an educational spanking and a firm reminder never to write unit
+tests which rely on third parties. Always mock.
+
+There's also some TODOs. So on that note:  
+- [ ] Resolve todos
+- [ ] Remove or implement commented out tests
+- [ ] Remove `sleep`s
+- [ ] Mock external requests
+
+Using this while re-running the tests to see what urls I need to mock:
+
+```js
+export const mockEverything = () => {
+  nock(/.*/).get(/.*/).reply(200, function() {
+    console.log(`${this.req.method} ${this.req.protocol || 'https'}://${this.req.host || this.req.headers.host}${this.req.path}`)
+    return {}
+  })
+}
+```
+
+These are the unique urls:
+```
+GET https://testnet.dcrdata.org/api/address/TsnuqFn7VNpnbZEktzzBGtMq9s6w6iYMn9j/totals
+GET https://testnet.dcrdata.org/insight/api/addr/TsX92kUWoJJj85jKj9Ti7f4uoF8JMETRfch/utxo
+GET https://testnet.dcrdata.org/insight/api/tx/c639788740c05772356fe83684ad7dc06000aa3647ae7af27a539a4f35ae93ce
+GET https://testnet.dcrdata.org/insight/api/utils/estimatefee?nbBlocks=1&nbBlocks=1
+GET https://testnet.thornode.thorchain.info/thorchain/inbound_addresses
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
